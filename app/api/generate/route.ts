@@ -1,7 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
-import { Database, MusicTrack } from "@/types";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { MusicTrack } from "@/types";
 
 type TrackRow = MusicTrack;
 
@@ -33,7 +32,7 @@ export const maxDuration = 10;
 
 export async function POST(req: Request) {
   try {
-    const supabase = createClient();
+    const supabase = await createClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -109,13 +108,18 @@ export async function POST(req: Request) {
 
     if (initialStatus === "generating") {
       const credits = (profile.credits ?? 0) - 1;
-      const { error: updateErr } = await profiles.update({ credits, updated_at: new Date().toISOString() }).eq("id", user.id);
+      const { error: updateErr } = await profiles
+        .update({ credits, updated_at: new Date().toISOString() })
+        .eq("id", user.id);
       if (updateErr) console.warn("[api/generate] credits deduct failed:", updateErr);
     }
 
     return NextResponse.json({ ok: true, track: track as TrackRow });
   } catch (err: any) {
     console.error("[api/generate] error:", err);
-    return NextResponse.json({ error: err?.message ?? "Internal server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message ?? "Internal server error" },
+      { status: 500 }
+    );
   }
 }
