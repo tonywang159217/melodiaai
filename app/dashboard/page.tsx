@@ -1,5 +1,6 @@
 import { Music, Sparkles } from "lucide-react";
 import Link from "next/link";
+import MusicGenerator from "@/components/MusicGenerator";
 
 export default function DashboardPage() {
   return (
@@ -20,26 +21,30 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_1.2fr]">
-        <div className="rounded-3xl border border-border/70 bg-card p-6">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Music size={16} /> Your recent tracks
-          </div>
-          <div className="mt-4 flex h-60 items-center justify-center rounded-2xl border border-dashed border-border/70 text-sm text-muted-foreground">
-            No tracks yet — generate your first one &rarr;
-          </div>
-        </div>
+      <div className="space-y-6">
+        <MusicGenerator />
 
-        <div className="rounded-3xl border border-border/70 bg-card p-6 text-sm text-muted-foreground">
-          <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground/80">
-            Plan usage
+        <div className="grid gap-6 lg:grid-cols-[1fr_1.2fr]">
+          <div className="rounded-3xl border border-border/70 bg-card p-6">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Music size={16} /> Your recent tracks
+            </div>
+            <div className="mt-4 flex h-60 items-center justify-center rounded-2xl border border-dashed border-border/70 text-sm text-muted-foreground">
+              No tracks yet — generate your first one above &rarr;
+            </div>
           </div>
-          <div className="text-2xl font-semibold text-foreground">
-            0 / 5 generations
-          </div>
-          <div className="mt-2 text-xs text-muted-foreground">Free plan</div>
-          <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-muted">
-            <div className="h-full w-0 rounded-full bg-gradient-to-r from-violet-500 to-indigo-500" />
+
+          <div className="rounded-3xl border border-border/70 bg-card p-6 text-sm text-muted-foreground">
+            <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground/80">
+              Plan usage
+            </div>
+            <div className="text-2xl font-semibold text-foreground">
+              0 / 5 generations
+            </div>
+            <div className="mt-2 text-xs text-muted-foreground">Free plan</div>
+            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full w-0 rounded-full bg-gradient-to-r from-violet-500 to-indigo-500" />
+            </div>
           </div>
         </div>
       </div>
