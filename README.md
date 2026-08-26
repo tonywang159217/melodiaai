@@ -1,0 +1,1 @@
+# MelodiaAI\n\nAI music generation SaaS built with Next.js 16, SongAPI (Suno), Supabase, Cloudflare R2, Lemon Squeezy.\n
