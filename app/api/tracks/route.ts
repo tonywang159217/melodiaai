@@ -1,186 +1,158 @@
-completeimport { createClient } from "@/lib/supabase/server"createClient
 import { NextResponse } from "next/server";
-import { MusicTrack } from "@/types";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { createClient } from "@/lib/supabase/server";
+import type { Database } from "@/types";
+import { R2 } from "@/lib/r2";
 
-const SONG_API_BASE = process.env.SONG_API_BASE ?? "https://api.songapi.dev";
+type TrackRow = Database["public"]["Tables"]["tracks"]["Row"];
+
+// ============ SongAPI Client (duplicated from generate/route.ts to avoid circular imports) ============
+const SONG_API_BASE = process.env.SONG_API_BASE_URL ?? "https://api.songapi.dev";
 const SONG_API_KEY = process.env.SONG_API_KEY ?? "";
 
-const R2_ACCOUNT = process.env.R2_ACCOUNT_ID ?? "";
-const R2_ACCESS = process.env.R2_ACCESS_KEY_ID ?? "";
-const R2_SECRET = process.env.R2_SECRET_ACCESS_KEY ?? "";
-const R2_BUCKET = process.env.R2_BUCKET ?? "";
-const R2_PUBLIC = (process.env.R2_PUBLIC_BUCKET_URL ?? "").replace(/\/$/, "");
-
-const s3 = R2_ACCOUNT && R2_ACCESS && R2_SECRET
-  ? new S3Client({
-      region: "auto",
-      endpoint: `https://${R2_ACCOUNT}.r2.cloudflarestorage.com`,
-      credentials: { accessKeyId: R2_ACCESS, secretAccessKey: R2_SECRET },
-    })
-  : null;
-
-type TrackRow = MusicTrack;
-
+interface SongApiClip {
+  id: string;
+  audio_url?: string;
+  title?: string;
+  duration_seconds?: number;
+}
 interface SongApiGeneration {
   id: string;
   status: "queued" | "processing" | "complete" | "failed";
+  prompt?: string;
   audio_url?: string;
-  image_url?: string;
   title?: string;
-  duration?: number;
+  duration_seconds?: number;
   error_message?: string;
+  clips?: SongApiClip[];
+}
+
+function songApiHeaders(): Record<string, string> {
+  if (!SONG_API_KEY) throw new Error("Missing SONG_API_KEY env var");
+  return {
+    Authorization: "Bearer " + SONG_API_KEY,
+    "Content-Type": "application/json",
+  };
 }
 
 async function getGeneration(id: string): Promise<SongApiGeneration> {
-  const res = await fetch(`${SONG_API_BASE}/v1/generations/${id}`, {
-    headers: { Authorization: `Bearer ${SONG_API_KEY}` },
+  const url = SONG_API_BASE + "/v1/generations/" + id;
+  const res = await fetch(url, {
+    headers: songApiHeaders(),
+    cache: "no-store",
   });
-  if (!res.ok) throw new Error(`SongAPI get failed: ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error("SongAPI get failed [" + res.status + "]");
+  return res.json() as Promise<SongApiGeneration>;
 }
 
-async function processGeneratingTrack(tracksTable: any, track: TrackRow): Promise<TrackRow> {
-  if (track.status !== "generating" || !track.suno_job_id) return track;
+/**
+ * Process a single generating track: check SongAPI status, download audio,
+ * upload to R2, and update DB record. Returns the (possibly updated) track row.
+ */
+async function processGeneratingTrack(
+  tracksTable: any,
+  track: TrackRow,
+): Promise<TrackRow> {
+  if (track.status !== "generating" || !track.suno_job_id) {
+    return track;
+  }
 
   let gen: SongApiGeneration;
   try {
     gen = await getGeneration(track.suno_job_id);
-  } catch (err) {
-    console.warn("[tracks] SongAPI poll failed:", err);
+  } catch (err: any) {
+    // If SongAPI temporarily fails, keep status as generating and try again next poll
+    console.warn("[tracks] SongAPI poll failed for track", track.id, ":", err?.message);
     return track;
   }
 
   if (gen.status === "queued" || gen.status === "processing") {
+    // Still generating — nothing to update
     return track;
   }
 
   if (gen.status === "failed") {
-    await tracksTable
-      .update({
-        status: "failed",
-        error_message: gen.error_message ?? "SongAPI failed",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", track.id);
-    return { ...track, status: "failed", error_message: gen.error_message ?? null };
+    const { data } = await tracksTable
+      .update({ status: "failed", error_message: gen.error_message ?? "SongAPI failed" })
+      .eq("id", track.id)
+      .select()
+      .single();
+    return (data ?? track) as TrackRow;
   }
 
-  if (gen.status === "complete") {
-    let audioUrl: string | null = null;
-    let coverUrl: string | null = null;
+  // Status is "complete" — process audio
+  let finalAudioUrl: string | null = null;
+  let duration: number | null = gen.duration_seconds ?? null;
+  const clip0 = gen.clips && gen.clips[0];
+  const sourceAudioUrl: string | undefined = gen.audio_url ?? clip0?.audio_url;
 
-    if (s3 && R2_BUCKET && gen.audio_url) {
-      try {
-        const ab = await fetch(gen.audio_url).then(r => {
-          if (!r.ok) throw new Error("audio fetch " + r.status);
-          return r.arrayBuffer();
-        });
-        const key = `tracks/${track.id}/audio.mp3`;
-        await s3.send(
-          new PutObjectCommand({
-            Bucket: R2_BUCKET,
-            Key: key,
-            Body: new Uint8Array(ab),
-            ContentType: "audio/mpeg",
-          })
-        );
-        audioUrl = R2_PUBLIC ? `${R2_PUBLIC}/${key}` : null;
-      } catch (e) {
-        console.warn("[tracks] audio upload failed:", e);
-        audioUrl = gen.audio_url;
-      }
-    } else if (gen.audio_url) {
-      audioUrl = gen.audio_url;
+  if (sourceAudioUrl) {
+    try {
+      const audioResp = await fetch(sourceAudioUrl, { cache: "no-store" });
+      if (!audioResp.ok) throw new Error("Audio download failed [" + audioResp.status + "]");
+      const audioBuf = await audioResp.arrayBuffer();
+      const contentType = audioResp.headers.get("content-type") ?? "audio/mpeg";
+      const ext = contentType.includes("wav") ? "wav" : contentType.includes("ogg") ? "ogg" : "mp3";
+      const r2Key = track.user_id + "/" + track.id + "." + ext;
+      const uploaded = await R2.put(r2Key, Buffer.from(audioBuf), contentType);
+      finalAudioUrl = uploaded;
+      if (!duration && clip0?.duration_seconds) duration = clip0.duration_seconds;
+    } catch (r2Err: any) {
+      console.warn("[tracks] R2 upload failed, fallback to source URL:", r2Err?.message);
+      finalAudioUrl = sourceAudioUrl;
     }
-
-    if (s3 && R2_BUCKET && gen.image_url) {
-      try {
-        const ab = await fetch(gen.image_url).then(r => {
-          if (!r.ok) throw new Error("image fetch " + r.status);
-          return r.arrayBuffer();
-        });
-        const key = `tracks/${track.id}/cover.jpg`;
-        await s3.send(
-          new PutObjectCommand({
-            Bucket: R2_BUCKET,
-            Key: key,
-            Body: new Uint8Array(ab),
-            ContentType: "image/jpeg",
-          })
-        );
-        coverUrl = R2_PUBLIC ? `${R2_PUBLIC}/${key}` : null;
-      } catch (e) {
-        console.warn("[tracks] cover upload failed:", e);
-        coverUrl = gen.image_url ?? null;
-      }
-    } else if (gen.image_url) {
-      coverUrl = gen.image_url;
-    }
-
-    const patch = {
-      status: "success" as const,
-      audio_url: audioUrl,
-      cover_url: coverUrl,
-      title: gen.title ?? track.title,
-      duration_sec: gen.duration ?? null,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data } = await tracksTable.update(patch).eq("id", track.id).select().single();
-    return (data ?? { ...track, ...patch }) as TrackRow;
   }
 
-  return track;
+  const finalUpd = {
+    status: "success",
+    audio_url: finalAudioUrl,
+    duration_sec: duration,
+    title: gen.title ?? track.title,
+  };
+  const { data: finalTrack, error: updErr } = await tracksTable
+    .update(finalUpd)
+    .eq("id", track.id)
+    .select()
+    .single();
+
+  if (updErr) {
+    console.error("[tracks] DB update failed:", updErr.message);
+    return track;
+  }
+
+  return (finalTrack ?? track) as TrackRow;
 }
 
-export const runtime = "nodejs";
-export const maxDuration = 30;
-
+// ============ Route Handler ============
 export async function GET() {
   try {
     const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const tracksTable = supabase.from("tracks") as any;
 
-    const { data: rows, error: listErr } = await tracksTable
+    // Fetch all user tracks ordered by created_at desc
+    const { data: tracks, error } = await tracksTable
       .select("*")
       .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .limit(20);
+      .order("created_at", { ascending: false });
 
-    if (listErr) {
-      return NextResponse.json({ error: "List failed: " + listErr.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: "DB query failed: " + error.message }, { status: 500 });
     }
 
-    const tracks: TrackRow[] = (rows ?? []) as TrackRow[];
-    const stillGenerating = tracks.filter(t => t.status === "generating" && t.suno_job_id);
+    const rows = (tracks ?? []) as TrackRow[];
 
-    if (stillGenerating.length > 0) {
-      for (const t of stillGenerating) {
-        try {
-          await processGeneratingTrack(tracksTable, t);
-        } catch (e) {
-          console.warn("[tracks] process error for", t.id, e);
-        }
-      }
-      const { data: fresh } = await tracksTable
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(20);
-      return NextResponse.json({ ok: true, tracks: (fresh ?? []) as TrackRow[] });
+    // Process generating tracks (check SongAPI + upload to R2)
+    // Process sequentially to avoid hitting rate limits / timeout
+    const processed: TrackRow[] = [];
+    for (const t of rows) {
+      processed.push(await processGeneratingTrack(tracksTable, t));
     }
 
-    return NextResponse.json({ ok: true, tracks });
+    return NextResponse.json({ ok: true, tracks: processed });
   } catch (err: any) {
     console.error("[api/tracks] error:", err);
     return NextResponse.json({ error: err?.message ?? "Internal server error" }, { status: 500 });
   }
-      }
+}  
