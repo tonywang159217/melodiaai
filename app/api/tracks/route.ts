@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+completeimport { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 import { MusicTrack } from "@/types";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
@@ -24,7 +24,7 @@ type TrackRow = MusicTrack;
 
 interface SongApiGeneration {
   id: string;
-  status: "queued" | "processing" | "completed" | "failed";
+  status: "queued" | "processing" | "complete" | "failed";
   audio_url?: string;
   image_url?: string;
   title?: string;
@@ -66,7 +66,7 @@ async function processGeneratingTrack(tracksTable: any, track: TrackRow): Promis
     return { ...track, status: "failed", error_message: gen.error_message ?? null };
   }
 
-  if (gen.status === "completed") {
+  if (gen.status === "complete") {
     let audioUrl: string | null = null;
     let coverUrl: string | null = null;
 
