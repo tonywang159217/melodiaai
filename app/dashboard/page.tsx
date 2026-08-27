@@ -1,7 +1,7 @@
 import { Music, Sparkles } from "lucide-react";
 import Link from "next/link";
 import MusicGenerator from "@/components/MusicGenerator";
-import TrackList from "@/components/TrackList";
+import { TrackList } from "@/components/TrackList";
 
 export default function DashboardPage() {
   return (
@@ -21,10 +21,8 @@ export default function DashboardPage() {
           Upgrade plan
         </Link>
       </div>
-
       <div className="space-y-6">
         <MusicGenerator />
-
         <div className="grid gap-6 lg:grid-cols-[1fr_1.2fr]">
           <div className="rounded-3xl border border-border/70 bg-card p-6">
             <div className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
@@ -32,22 +30,11 @@ export default function DashboardPage() {
             </div>
             <TrackList />
           </div>
-
           <div className="rounded-3xl border border-border/70 bg-card p-6 text-sm text-muted-foreground">
-            <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground/80">
-              Plan usage
-            </div>
-            <div className="text-2xl font-semibold text-foreground">
-              0 / 5 generations
-            </div>
-            <div className="mt-2 text-xs text-muted-foreground">Free plan</div>
-            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-muted">
-              <div className="h-full w-0 rounded-full bg-gradient-to-r from-violet-500 to-indigo-500" />
-            </div>
+            No tracks found.
           </div>
         </div>
       </div>
     </section>
   );
 }
-  
